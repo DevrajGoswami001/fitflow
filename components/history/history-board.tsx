@@ -215,7 +215,7 @@ export function HistoryBoard({ userId, initialSnapshot }: HistoryBoardProps) {
             </div>
             <h2 className="mt-2 text-xl font-semibold text-foreground">Workout history</h2>
           </div>
-          <div className="grid gap-3 md:grid-cols-2 lg:w-[520px]">
+          <div className="grid gap-3 md:grid-cols-2 w-full max-w-lg">
             <Input type="date" value={dateFilter} onChange={(event) => setDateFilter(event.target.value)} />
             <Input placeholder="Search exercise" value={exerciseFilter} onChange={(event) => setExerciseFilter(event.target.value)} />
           </div>

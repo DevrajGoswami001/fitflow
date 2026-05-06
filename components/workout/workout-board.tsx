@@ -5,26 +5,24 @@ import { AnimatePresence } from 'framer-motion';
 import { Flame, RefreshCcw, Check, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { WorkoutForm } from '@/components/workout/workout-form';
-import { TemplatePicker } from '@/components/workout/template-picker';
 import { Badge } from '@/components/shared/badge';
 import { Card } from '@/components/shared/card';
 import { EmptyState } from '@/components/shared/empty-state';
 import { Button } from '@/components/shared/button';
-import { useWorkoutStore, type WorkoutItem, type WorkoutTemplateItem } from '@/lib/store/workout-store';
+import { Skeleton } from '@/components/shared/skeleton';
+import { useWorkoutStore, type WorkoutItem } from '@/lib/store/workout-store';
 import type { DashboardSnapshot, SimpleWorkout } from '@/lib/queries';
 import { createClient } from '@/lib/supabase/client';
 import {
   ensureTodaySession,
   createWorkout,
   deleteWorkoutById,
-  loadTemplateIntoSession,
-  saveTemplate,
   toggleWorkoutSetComplete,
   updateWorkout
 } from '@/lib/workout-actions';
 import { useWorkoutRealtime } from '@/lib/hooks/use-workout-realtime';
 import { WorkoutValues } from '@/lib/validations';
-import { cn } from '@/lib/utils';
+import { calculateStreak, cn } from '@/lib/utils';
 import { motion as motion2 } from 'framer-motion';
 
 interface WorkoutBoardProps {
@@ -51,13 +49,14 @@ export function WorkoutBoard({ snapshot, workouts: initialWorkouts = [] }: Worko
   const supabase = createClient();
   const [sessionId, setSessionId] = useState<string | null>(snapshot.session?.id ?? null);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [streak, setStreak] = useState<number | null>(null);
+  const [isStreakLoading, setIsStreakLoading] = useState(true);
   const [workouts, setWorkouts] = useState<SimpleWorkout[]>(() =>
     initialWorkouts.map(mapWorkoutRowToSimpleWorkout)
   );
   const [completedCount, setCompletedCount] = useState<number>(snapshot.completedCount ?? 0);
 
   const workoutStoreItems = useWorkoutStore((state) => state.workouts);
-  const templates = useWorkoutStore((state) => state.templates);
   const activeDate = useWorkoutStore((state) => state.activeDate);
   const hydrate = useWorkoutStore((state) => state.hydrate);
   const addWorkout = useWorkoutStore((state) => state.addWorkout);
@@ -91,30 +90,69 @@ export function WorkoutBoard({ snapshot, workouts: initialWorkouts = [] }: Worko
             })),
             createdAt: row.createdAt
           })) ?? [],
-      templates: snapshot.templates.map((template) => ({
-        id: template.id,
-        name: template.name,
-        description: template.description,
-        isPredefined: template.isPredefined,
-        templateData: template.templateData
-      }))
     });
-  }, [hydrate, snapshot.session, snapshot.templates]);
+  }, [hydrate, snapshot.session]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    async function fetchStreakForUser(userId: string) {
+      setIsStreakLoading(true);
+
+      const { data, error } = await supabase
+        .from('workouts')
+        .select('created_at')
+        .eq('user_id', userId)
+        .order('created_at', { ascending: false });
+
+      if (!isMounted) return;
+
+      if (error) {
+        console.error('fetchStreakForUser: failed to load streak', error);
+        setStreak(null);
+        setIsStreakLoading(false);
+        return;
+      }
+
+      const completedDates = (data ?? [])
+        .map((row) => row.created_at)
+        .filter((value): value is string => Boolean(value));
+
+      setStreak(calculateStreak(completedDates));
+      setIsStreakLoading(false);
+    }
+
+    void supabase.auth.getUser().then(({ data: { user } }) => {
+      if (!isMounted) return;
+
+      if (!user) {
+        setStreak(null);
+        setIsStreakLoading(false);
+        return;
+      }
+
+      void fetchStreakForUser(user.id);
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!isMounted) return;
+
+      if (!session?.user) {
+        setStreak(null);
+        setIsStreakLoading(false);
+        return;
+      }
+
+      void fetchStreakForUser(session.user.id);
+    });
+
+    return () => {
+      isMounted = false;
+      subscription.unsubscribe();
+    };
+  }, [supabase]);
 
   useWorkoutRealtime(snapshot.userId);
-
-  const currentTemplateData = useMemo<WorkoutTemplateItem[]>(
-    () =>
-      workoutStoreItems
-        .filter((w) => !w.isComplete)
-        .map((workout) => ({
-          exerciseName: workout.exerciseName,
-          muscleGroup: workout.muscleGroup,
-          notes: workout.notes ?? undefined,
-          sets: workout.sets.map((set) => ({ reps: set.reps, weight: set.weight, completed: set.completed }))
-        })),
-    [workoutStoreItems]
-  );
 
   async function ensureSession() {
     if (sessionId) return sessionId;
@@ -249,52 +287,6 @@ export function WorkoutBoard({ snapshot, workouts: initialWorkouts = [] }: Worko
     }
   }
 
-  async function loadTemplate(templateId: string) {
-    const template = templates.find((item) => item.id === templateId);
-    if (!template) return;
-
-    const nextSessionId = await ensureSession();
-    const templateData = (template.templateData as unknown as WorkoutTemplateItem[]) ?? [];
-    const position = workoutStoreItems.length;
-
-    try {
-      const inserted = await loadTemplateIntoSession(supabase, {
-        userId: snapshot.userId,
-        sessionId: nextSessionId,
-        templateData,
-        startPosition: position
-      });
-
-      inserted.forEach((workout, index) => {
-        addWorkout({
-          id: workout.id,
-          exerciseName: templateData[index]?.exerciseName ?? 'Exercise',
-          muscleGroup: templateData[index]?.muscleGroup ?? 'General',
-          notes: templateData[index]?.notes ?? null,
-          isComplete: false,
-          position: position + index,
-          createdAt: workout.created_at,
-          sets: workout.sets.map((set) => ({
-            id: set.id,
-            setIndex: set.set_index,
-            reps: set.reps,
-            weight: set.weight,
-            completed: set.completed
-          }))
-        });
-
-        const simple = mapWorkoutRowToSimpleWorkout(workout);
-        setWorkouts((prev) => [simple, ...prev]);
-      });
-
-      toast.success(`Loaded ${template.name}`);
-      setIsRefreshing(true);
-      setTimeout(() => setIsRefreshing(false), 500);
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to load template');
-    }
-  }
-
   async function markWorkoutDone(workoutId: string) {
     const existing = workouts.find((w) => w.id === workoutId);
     if (!existing) return;
@@ -313,6 +305,22 @@ export function WorkoutBoard({ snapshot, workouts: initialWorkouts = [] }: Worko
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json?.error ?? 'Failed to mark workout complete');
+      void supabase.auth.getUser().then(({ data: { user } }) => {
+        if (!user) return;
+        void (async () => {
+          const { data } = await supabase
+            .from('workouts')
+            .select('created_at')
+            .eq('user_id', user.id)
+            .order('created_at', { ascending: false });
+
+          const completedDates = (data ?? [])
+            .map((row) => row.created_at)
+            .filter((value): value is string => Boolean(value));
+
+          setStreak(calculateStreak(completedDates));
+        })();
+      });
       toast.success('Workout marked as done');
     } catch (error) {
       // revert completed count on failure
@@ -345,32 +353,10 @@ export function WorkoutBoard({ snapshot, workouts: initialWorkouts = [] }: Worko
     toast.success('Workout added!');
   }
 
-  async function saveCurrentTemplate(name: string, description: string) {
-    if (currentTemplateData.length === 0) {
-      toast.error('Add at least one exercise before saving a template');
-      return;
-    }
-
-    try {
-      await saveTemplate(supabase, {
-        userId: snapshot.userId,
-        name,
-        description,
-        templateData: currentTemplateData
-      });
-      toast.success('Template saved');
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Failed to save template');
-    }
-  }
-
   const activeList = useMemo(() => workouts.filter((w) => !w.completed), [workouts]);
   const activeCount = activeList.length;
   const totalCount = activeCount + completedCount;
   const completionPercentage = totalCount === 0 ? 0 : Math.round((completedCount / totalCount) * 100);
-
-  // Use server-calculated streak so it persists after reloads
-  const streak = snapshot.streak ?? 0;
 
   return (
     <div className="space-y-8">
@@ -378,8 +364,10 @@ export function WorkoutBoard({ snapshot, workouts: initialWorkouts = [] }: Worko
         <Card className="border-primary/20 bg-primary/10">
           <div className="flex items-center justify-between">
             <div>
-              <div className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Streak</div>
-              <div className="mt-2 text-3xl font-semibold text-foreground">{streak}</div>
+              <div className="text-xs uppercase tracking-[0.3em] text-muted-foreground">Activity</div>
+              <div className="mt-2 text-3xl font-semibold text-foreground">
+                {isStreakLoading || streak === null ? <Skeleton className="h-8 w-16" /> : streak}
+              </div>
             </div>
             <Flame className="h-6 w-6 text-primary" />
           </div>
@@ -399,13 +387,6 @@ export function WorkoutBoard({ snapshot, workouts: initialWorkouts = [] }: Worko
       </div>
 
       <WorkoutForm onSubmit={addExercise} onSuccess={handleWorkoutAdded} />
-
-      <TemplatePicker
-        templates={templates}
-        onLoadTemplate={loadTemplate}
-        onSaveTemplate={saveCurrentTemplate}
-        currentWorkouts={currentTemplateData}
-      />
 
       <div className="flex items-center justify-between">
         <div>

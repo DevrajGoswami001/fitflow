@@ -32,8 +32,7 @@ export async function middleware(request: NextRequest) {
   const isProtectedRoute =
     request.nextUrl.pathname.startsWith('/home') ||
     request.nextUrl.pathname.startsWith('/history') ||
-    request.nextUrl.pathname.startsWith('/analytics') ||
-    request.nextUrl.pathname.startsWith('/templates');
+    request.nextUrl.pathname.startsWith('/analytics');
 
   if (!user && isProtectedRoute) {
     const url = request.nextUrl.clone();
@@ -51,5 +50,5 @@ export async function middleware(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ['/login', '/signup', '/home/:path*', '/history/:path*', '/analytics/:path*', '/templates/:path*']
+  matcher: ['/login', '/signup', '/home/:path*', '/history/:path*', '/analytics/:path*']
 };
