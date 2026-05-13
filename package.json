@@ -10,6 +10,8 @@
     "db:schema": "psql $DATABASE_URL -f supabase/migrations/0001_initial_schema.sql"
   },
   "dependencies": {
+    "@capacitor/cli": "^8.3.4",
+    "@capacitor/core": "^8.3.4",
     "@hookform/resolvers": "^3.10.0",
     "@radix-ui/react-slot": "^1.1.2",
     "@supabase/ssr": "^0.7.0",
